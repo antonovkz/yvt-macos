@@ -114,8 +114,6 @@ get_message() {
 bold=$(tput bold)
 normal=$(tput sgr0)
 
-echo "${bold}🔗 Ссылка: ${normal}https://www.youtube.com/watch?v=vZPiI-5DIoo"
-
 lang_app=$(echo $LANG | cut -d '_' -f1)
 message_key="${lang_app}_args"
 if [[ -n "$(get_message "$message_key")" ]]; then
