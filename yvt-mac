@@ -2,15 +2,6 @@
 
 VERSION="1.1"
 
-if [ -z "$LANG" ]; then
-    echo "Переменная LANG не установлена. Устанавливаю значение по умолчанию (ru_RU.UTF-8)"
-    export LANG="ru_RU.UTF-8"
-else
-    echo "Переменная LANG установлена: $LANG"
-fi
-
-
-# Упрощенные сообщения в формате ключ|сообщение
 MESSAGES=(
 "en_args|Args"
 "en_args_bitrate|Set bitrate in Kbit"
@@ -114,15 +105,18 @@ get_message() {
 bold=$(tput bold)
 normal=$(tput sgr0)
 
+if [ -z "$LANG" ]; then
+    export LANG="ru_RU.UTF-8"
+fi
+
 lang_app=$(echo $LANG | cut -d '_' -f1)
 message_key="${lang_app}_args"
 if [[ -n "$(get_message "$message_key")" ]]; then
     lang_app=$(echo $LANG | cut -d '_' -f1)
 else
-    lang_app="en"
+    lang_app="ru"
 fi
 
-# Проверка наличия зависимостей
 dependencies=("yt-dlp" "vot-cli" "jq" "ffmpeg" "ffprobe")
 missing_dependencies=()
 
@@ -154,10 +148,10 @@ parse_args() {
         echo -e "  -s — $(get_message "${lang_app}_args_subs")\n"
         echo -e "${bold}$(get_message "${lang_app}_options"):${normal}"
         echo -e "  --help — $(get_message "${lang_app}_options_help")"
-        echo -e "  --version — $(get_message "${lang_app}_options_version")\n"
-        echo -e "${bold}$(get_message "${lang_app}_examples"):${normal}"
-        echo -e "  yvt -v 0.5 -b 800 'https://www.youtube.com/watch?v=example_video'"
-        echo -e "  yvt -v .2 -b 500 -f ./linklist.txt"
+        echo -е "  --version — $(get_message "${lang_app}_options_version")\n"
+        echo -е "${bold}$(get_message "${lang_app}_examples"):${normal}"
+        echo -е "  yvt -v 0.5 -b 800 'https://www.youtube.com/watch?v=example_video'"
+        echo -е "  yvt -v .2 -b 500 -f ./linklist.txt"
     }
 
     if [ $# -eq 0 ]; then
@@ -195,12 +189,7 @@ parse_args() {
                     echo "$(get_message "${lang_app}_file_not_exist_error")" >&2
                     exit 1
                 fi
-                exec 3< "$file_input"
-                while IFS= read -r line <&3; do
-                    parse_link "$line"
-                    echo "$line"
-                done
-                exec 3<&-
+                process_file "$file_input"
                 exit 0
                 ;;
             l )
@@ -253,7 +242,11 @@ parse_args() {
 
     shift $((OPTIND -1))
     video_link="${@: -1}"
-    parse_link "$video_link"
+    if [[ $video_link == *"list="* ]]; then
+        process_playlist "$video_link"
+    else
+        parse_link "$video_link"
+    fi
 
     if [ -z "$video_link" ]; then
         echo "$(get_message "${lang_app}_link_required_error")"
@@ -262,14 +255,30 @@ parse_args() {
     fi
 }
 
-# Функция для обработки каждой ссылки
+process_file() {
+    local file_input=$1
+    exec 3< "$file_input"
+    while IFS= read -r line <&3; do
+        parse_link "$line"
+    done
+    exec 3<&-
+}
+
+process_playlist() {
+    local playlist_link=$1
+    local temp_playlist_file="./linklist.txt"
+    
+    yt-dlp --print-to-file url "$temp_playlist_file" --flat-playlist -i "$playlist_link"
+    process_file "$temp_playlist_file"
+    rm "$temp_playlist_file"
+}
+
 parse_link() {
     video_link="$1"
     tput cuu1
     tput el
     echo -e "${bold}🔗 $(get_message "${lang_app}_link"): ${normal}$video_link"
 
-    # Определение видеокарты для macOS
     video_codec="libx264"
     if system_profiler SPDisplaysDataType | grep -i "NVIDIA" &> /dev/null; then
         video_codec="h264_nvenc"
@@ -291,10 +300,12 @@ parse_link() {
         rm -rf "$temp_dir"
     fi
 
-    mkdir $temp_dir && mkdir $temp_video_dir && mkdir $temp_audio_dir && mkdir $temp_subs_dir
+    mkdir -p $temp_video_dir
+    mkdir -p $temp_audio_dir
+    mkdir -p $temp_subs_dir
 
     attempts=0
-    while ! yt-dlp --progress --quiet -o "$temp_video" $video_link  && (( attempts < 10 )); do
+    while ! yt-dlp --progress --quiet -o "$temp_video" "$video_link" && (( attempts < 10 )); do
         (( attempts++ ))
         echo "$(get_message "${lang_app}_loading_error") $(get_message "${lang_app}_retrying")$attempts"
         sleep 5
@@ -322,7 +333,6 @@ parse_link() {
 
     if [ "$source_video_codec" != "h264" ] || [ "$source_audio_codec" != "aac" ]; then
         ffmpeg \
-            $cuda \
             -hide_banner -v quiet -stats \
             -i "$temp_video_dir/$video_full_name" \
             -c:v $video_codec -b:v "${bitrate}K" -crf 23 -preset medium -c:a aac \
@@ -337,20 +347,17 @@ parse_link() {
     fi
 
     if ffmpeg \
-        $cuda \
         -hide_banner -v quiet -stats \
         -i $temp_video_dir/* -i $temp_audio_dir/* -i "$subs_full_name".srt \
         -c:v $video_codec -b:v "${bitrate}K" -crf 23 -preset medium \
-        -filter_complex "[0:a] volume=$original_sound_ratio [original]; \
-        [original][1:a] amix=inputs=2:duration=longest [mixed_audio]; \
-        [0:a] volume=1 [original_audio]" \
+        -filter_complex "[0:a] volume=$original_sound_ratio [original]; [original][1:a] amix=inputs=2:duration=longest [mixed_audio]; [0:a] volume=1 [original_audio]" \
         -map 0:v -map "[mixed_audio]" -map "[original_audio]" -map 2:s \
         -c:s mov_text -metadata:s:a:0 language=russian -metadata:s:a:1 language=english -metadata:s:s:0 language=english \
         -y "${video_full_name%.*}_translated.mp4"; then
 
         tput cuu1
         tput el
-
+        
         echo -e "${bold}👍 $(get_message "${lang_app}_done")${normal}"
         echo
     else
@@ -361,5 +368,4 @@ parse_link() {
     rm -r $temp_dir
 }
 
-# Парсинг аргументов командной строки
 parse_args "$@"
